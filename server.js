@@ -85,27 +85,9 @@ async function getWebhookByToken(token) {
 
 // Função auxiliar para processar webhook
 async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
-  try {
-    console.log('🔄 Tentando processamento principal...');
-    const { data, error } = await supabase
-      .rpc('process_webhook_payload', {
-        p_webhook_endpoint_id: webhookId,
-        p_payload: payload,
-        p_headers: headers,
-        p_source_ip: sourceIP
-      });
-      
-    if (error) {
-      console.log('❌ Erro na função principal, usando processamento alternativo:', error.message);
-      return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
-    }
-    
-    console.log('✅ Processamento principal bem-sucedido');
-    return data;
-  } catch (err) {
-    console.log('❌ Exceção na função principal, usando processamento alternativo:', err.message);
-    return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
-  }
+  // ✅ Usar sempre o processamento JavaScript corrigido
+  console.log('🔄 Usando processamento JavaScript corrigido...');
+  return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
 }
 
 // Função alternativa para processar webhook quando há problemas com a função principal
