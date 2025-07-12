@@ -281,40 +281,117 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
       };
     }
     
-    // ✅ Criar contato se necessário
+    // ✅ Verificar se já existe contato com o mesmo número/email
     let contactId = null;
     if (leadData.phone || leadData.email || leadData.name || leadData.nome) {
-      const { data: contactResult, error: contactError } = await supabase
-        .from('contacts')
-        .insert({
-          company_id: webhook.company_id,
-          first_name: leadData.name || leadData.nome || 'Contato',
-          full_name: leadData.name || leadData.nome || 'Contato via Webhook',
-          email: leadData.email,
-          phone: leadData.phone,
-          created_by: user.id
-        })
-        .select()
-        .single();
+      // Primeiro, tentar encontrar contato existente pelo telefone ou email
+      let existingContact = null;
       
-      if (!contactError) {
-        contactId = contactResult.id;
+      if (leadData.phone) {
+        const { data: phoneContact } = await supabase
+          .from('contacts')
+          .select('id')
+          .eq('company_id', webhook.company_id)
+          .eq('phone', leadData.phone)
+          .single();
+        
+        if (phoneContact) {
+          existingContact = phoneContact;
+        }
+      }
+      
+      // Se não encontrou pelo telefone, tentar pelo email
+      if (!existingContact && leadData.email) {
+        const { data: emailContact } = await supabase
+          .from('contacts')
+          .select('id')
+          .eq('company_id', webhook.company_id)
+          .eq('email', leadData.email)
+          .single();
+        
+        if (emailContact) {
+          existingContact = emailContact;
+        }
+      }
+      
+      if (existingContact) {
+        // Usar contato existente
+        contactId = existingContact.id;
+        console.log(`📞 Usando contato existente: ${contactId}`);
+      } else {
+        // Criar novo contato
+        const { data: contactResult, error: contactError } = await supabase
+          .from('contacts')
+          .insert({
+            company_id: webhook.company_id,
+            first_name: leadData.name || leadData.nome || 'Contato',
+            full_name: leadData.name || leadData.nome || 'Contato via Webhook',
+            email: leadData.email,
+            phone: leadData.phone,
+            created_by: user.id
+          })
+          .select()
+          .single();
+        
+        if (!contactError) {
+          contactId = contactResult.id;
+          console.log(`👤 Novo contato criado: ${contactId}`);
+        }
       }
     }
     
-         // ✅ Usar a função principal do webhook que já faz o cast correto
-     const result = await processWebhookPayload(
-       webhookId,
-       payload,
-       JSON.stringify(headers),
-       sourceIP
-     );
+         // ✅ Criar lead com pipeline e coluna especificados
+     const { data: leadResult, error: leadError } = await supabase
+       .from('leads')
+       .insert({
+         company_id: webhook.company_id,
+         created_by: user.id,
+         pipeline_id: webhook.pipeline_id,
+         column_id: webhook.default_column_id, // ✅ Usar a coluna configurada
+         contact_id: contactId,
+         name: leadData.name || leadData.nome || 'Lead via Webhook',
+         email: leadData.email,
+         phone: leadData.phone,
+         company: leadData.company,
+         title: leadData.title,
+         notes: leadData.notes,
+         website: leadData.website,
+         linkedin: leadData.linkedin,
+         status: leadData.status,
+         priority: leadData.priority,
+         source: leadData.source,
+         metadata: payload // Salvar payload original como metadata
+       })
+       .select()
+       .single();
      
-     if (result.success) {
-       return result;
-     } else {
-       throw new Error(result.error || 'Erro no processamento do webhook');
+     if (leadError) {
+       console.error('Erro ao criar lead:', leadError);
+       throw leadError;
      }
+     
+     console.log('✅ Lead criado com sucesso:', leadResult.id);
+     
+     // Atualizar status da requisição para sucesso
+     if (requestData) {
+       await supabase
+         .from('webhook_requests')
+         .update({
+           status: 'success',
+           processed_at: new Date().toISOString(),
+           lead_id: leadResult.id
+         })
+         .eq('id', requestData.id);
+     }
+     
+     return {
+       success: true,
+       lead_id: leadResult.id,
+       contact_id: contactId,
+       pipeline_id: webhook.pipeline_id,
+       column_id: webhook.default_column_id,
+       message: 'Lead criado com sucesso via webhook'
+     };
     
   } catch (error) {
     console.error('Erro no processamento alternativo:', error);
