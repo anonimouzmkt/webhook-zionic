@@ -85,20 +85,274 @@ async function getWebhookByToken(token) {
 
 // Função auxiliar para processar webhook
 async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
-  const { data, error } = await supabase
-    .rpc('process_webhook_payload', {
-      p_webhook_endpoint_id: webhookId,
-      p_payload: payload,
-      p_headers: headers,
-      p_source_ip: sourceIP
-    });
+  try {
+    const { data, error } = await supabase
+      .rpc('process_webhook_payload', {
+        p_webhook_endpoint_id: webhookId,
+        p_payload: payload,
+        p_headers: headers,
+        p_source_ip: sourceIP
+      });
+      
+    if (error) {
+      console.error('Erro ao processar webhook:', error);
+      
+      // Se o erro for sobre coluna inexistente, criar uma versão simplificada
+      if (error.message?.includes('column "is_system" does not exist')) {
+        console.log('🔄 Tentando processamento alternativo...');
+        return await processWebhookPayloadFallback(webhookId, payload, headers, sourceIP);
+      }
+      
+      throw error;
+    }
     
-  if (error) {
-    console.error('Erro ao processar webhook:', error);
-    throw error;
+    return data;
+  } catch (err) {
+    console.error('Erro crítico ao processar webhook:', err);
+    throw err;
   }
+}
+
+// Função alternativa para processar webhook quando há problemas com a função principal
+async function processWebhookPayloadFallback(webhookId, payload, headers, sourceIP) {
+  console.log('🔄 Usando processamento alternativo para webhook:', webhookId);
   
-  return data;
+  try {
+    // Buscar configurações do webhook
+    const { data: webhook, error: webhookError } = await supabase
+      .from('webhook_endpoints')
+      .select(`
+        *,
+        pipelines (
+          id,
+          name,
+          pipeline_columns (
+            id,
+            position
+          )
+        )
+      `)
+      .eq('id', webhookId)
+      .single();
+      
+    if (webhookError) {
+      throw webhookError;
+    }
+    
+    if (!webhook) {
+      return {
+        success: false,
+        error: 'Webhook endpoint não encontrado'
+      };
+    }
+    
+    // Registrar requisição
+    const { data: requestData, error: requestError } = await supabase
+      .from('webhook_requests')
+      .insert({
+        webhook_endpoint_id: webhookId,
+        method: 'POST',
+        payload: payload,
+        headers: headers,
+        source_ip: sourceIP,
+        status: 'processing'
+      })
+      .select()
+      .single();
+    
+    if (requestError) {
+      console.error('Erro ao registrar requisição:', requestError);
+    }
+    
+    // Se está em modo mapping, apenas salvar dados de exemplo
+    if (webhook.mapping_mode === 'mapping') {
+      const { error: sampleError } = await supabase
+        .from('webhook_sample_data')
+        .upsert({
+          webhook_endpoint_id: webhookId,
+          sample_payload: payload,
+          detected_fields: Object.keys(payload)
+        });
+      
+      if (sampleError) {
+        console.error('Erro ao salvar dados de exemplo:', sampleError);
+      }
+      
+      // Atualizar status da requisição
+      if (requestData) {
+        await supabase
+          .from('webhook_requests')
+          .update({
+            status: 'completed',
+            processed_at: new Date().toISOString()
+          })
+          .eq('id', requestData.id);
+      }
+      
+      return {
+        success: true,
+        mode: 'mapping',
+        message: 'Dados de exemplo salvos para mapeamento'
+      };
+    }
+    
+    // Se não está ativo, ignorar
+    if (webhook.mapping_mode !== 'active') {
+      return {
+        success: false,
+        error: 'Webhook não está em modo ativo'
+      };
+    }
+    
+    // Buscar usuário para criação do lead (primeiro admin da empresa)
+    const { data: user, error: userError } = await supabase
+      .from('users')
+      .select('id')
+      .eq('company_id', webhook.company_id)
+      .eq('is_admin', true)
+      .limit(1)
+      .single();
+    
+    if (userError || !user) {
+      console.error('Erro ao buscar usuário:', userError);
+      return {
+        success: false,
+        error: 'Usuário não encontrado para criação do lead'
+      };
+    }
+    
+    // Buscar mapeamentos de campos
+    const { data: mappings, error: mappingsError } = await supabase
+      .from('webhook_field_mappings')
+      .select('source_field, target_field, is_required, default_value')
+      .eq('webhook_endpoint_id', webhookId)
+      .eq('is_active', true);
+    
+    if (mappingsError) {
+      console.error('Erro ao buscar mapeamentos:', mappingsError);
+    }
+    
+    // Processar campos do lead
+    let leadData = {
+      status: webhook.default_lead_status || 'new',
+      priority: webhook.default_lead_priority || 'medium',
+      source: webhook.default_lead_source || 'webhook'
+    };
+    
+    // Aplicar mapeamentos
+    if (mappings && mappings.length > 0) {
+      for (const mapping of mappings) {
+        const sourceValue = getNestedValue(payload, mapping.source_field);
+        const fieldValue = sourceValue || mapping.default_value;
+        
+        if (mapping.is_required && !fieldValue) {
+          return {
+            success: false,
+            error: `Campo obrigatório ausente: ${mapping.source_field}`
+          };
+        }
+        
+        if (fieldValue) {
+          leadData[mapping.target_field] = fieldValue;
+        }
+      }
+    } else {
+      // Mapeamento automático básico se não há mapeamentos configurados
+      leadData = {
+        ...leadData,
+        name: payload.name || payload.nome || payload.customer?.name || 'Lead do Webhook',
+        email: payload.email || payload.customer?.email || null,
+        phone: payload.phone || payload.telefone || payload.customer?.phone || null,
+        company: payload.company || payload.empresa || payload.customer?.company || null,
+        notes: `Lead criado automaticamente via webhook em ${new Date().toISOString()}`
+      };
+    }
+    
+    // Criar lead usando função unificada
+    const { data: leadResult, error: leadError } = await supabase
+      .rpc('create_lead_unified', {
+        p_lead_data: leadData,
+        p_user_id: user.id,
+        p_company_id: webhook.company_id
+      });
+    
+    if (leadError) {
+      console.error('Erro ao criar lead:', leadError);
+      
+      // Atualizar status da requisição como falha
+      if (requestData) {
+        await supabase
+          .from('webhook_requests')
+          .update({
+            status: 'failed',
+            error_message: leadError.message,
+            processed_at: new Date().toISOString()
+          })
+          .eq('id', requestData.id);
+      }
+      
+      return {
+        success: false,
+        error: leadError.message || 'Erro ao criar lead'
+      };
+    }
+    
+    // Mover lead para pipeline específico se configurado
+    if (webhook.pipeline_id && webhook.pipelines?.pipeline_columns?.length > 0) {
+      const firstColumn = webhook.pipelines.pipeline_columns
+        .sort((a, b) => a.position - b.position)[0];
+      
+      if (firstColumn && leadResult?.lead_id) {
+        await supabase
+          .rpc('move_lead_to_column', {
+            p_lead_id: leadResult.lead_id,
+            p_column_id: firstColumn.id
+          });
+      }
+    }
+    
+    // Atualizar status da requisição como sucesso
+    if (requestData) {
+      await supabase
+        .from('webhook_requests')
+        .update({
+          status: 'success',
+          processing_result: leadResult,
+          created_lead_id: leadResult?.lead_id,
+          processed_at: new Date().toISOString()
+        })
+        .eq('id', requestData.id);
+    }
+    
+    // Atualizar estatísticas do webhook
+    await supabase
+      .rpc('increment_webhook_stats', {
+        p_webhook_id: webhookId,
+        p_success: true
+      });
+    
+    return {
+      success: true,
+      lead_id: leadResult?.lead_id,
+      contact_id: leadResult?.contact_id,
+      pipeline_id: webhook.pipeline_id,
+      column_id: webhook.pipelines?.pipeline_columns?.[0]?.id
+    };
+    
+  } catch (error) {
+    console.error('Erro no processamento alternativo:', error);
+    return {
+      success: false,
+      error: error.message || 'Erro interno no processamento'
+    };
+  }
+}
+
+// Função auxiliar para acessar valores aninhados
+function getNestedValue(obj, path) {
+  return path.split('.').reduce((current, key) => {
+    return current && current[key] !== undefined ? current[key] : null;
+  }, obj);
 }
 
 // Health Check
