@@ -302,85 +302,19 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
       }
     }
     
-    // ✅ Criar lead diretamente na tabela (sem usar create_lead_unified)
-    const { data: leadResult, error: leadError } = await supabase
-      .from('leads')
-      .insert({
-        company_id: webhook.company_id,
-        contact_id: contactId,
-        title: leadData.title || leadData.name || leadData.nome || 'Lead via Webhook',
-        description: leadData.description || 'Lead criado via webhook',
-        status: leadData.status || 'new',
-        priority: leadData.priority || 'medium', // ✅ Já vem mapeado pela função mapPriorityToEnum
-        source: leadData.source || 'webhook',
-        created_by: user.id
-      })
-      .select()
-      .single();
-    
-    if (leadError) {
-      console.error('Erro ao criar lead:', leadError);
-      
-      // Atualizar status da requisição como falha
-      if (requestData) {
-        await supabase
-          .from('webhook_requests')
-          .update({
-            status: 'failed',
-            error_message: leadError.message,
-            processed_at: new Date().toISOString()
-          })
-          .eq('id', requestData.id);
-      }
-      
-      return {
-        success: false,
-        error: leadError.message || 'Erro ao criar lead'
-      };
-    }
-    
-    // Mover lead para pipeline específico se configurado
-    if (webhook.pipeline_id && webhook.pipelines?.pipeline_columns?.length > 0) {
-      const firstColumn = webhook.pipelines.pipeline_columns
-        .sort((a, b) => a.position - b.position)[0];
-      
-      if (firstColumn && leadResult?.id) {
-        await supabase
-          .rpc('move_lead_to_column', {
-            p_lead_id: leadResult.id,
-            p_column_id: firstColumn.id
-          });
-      }
-    }
-    
-    // Atualizar status da requisição como sucesso
-    if (requestData) {
-      await supabase
-        .from('webhook_requests')
-        .update({
-          status: 'success',
-          processing_result: { success: true, lead_id: leadResult?.id, contact_id: contactId },
-          created_lead_id: leadResult?.id,
-          created_contact_id: contactId,
-          processed_at: new Date().toISOString()
-        })
-        .eq('id', requestData.id);
-    }
-    
-    // Atualizar estatísticas do webhook
-    await supabase
-      .rpc('increment_webhook_stats', {
-        p_webhook_id: webhookId,
-        p_success: true
-      });
-    
-    return {
-      success: true,
-      lead_id: leadResult?.id,
-      contact_id: contactId,
-      pipeline_id: webhook.pipeline_id,
-      column_id: webhook.pipelines?.pipeline_columns?.[0]?.id
-    };
+         // ✅ Usar a função principal do webhook que já faz o cast correto
+     const result = await processWebhookPayload(
+       webhookId,
+       payload,
+       JSON.stringify(headers),
+       sourceIP
+     );
+     
+     if (result.success) {
+       return result;
+     } else {
+       throw new Error(result.error || 'Erro no processamento do webhook');
+     }
     
   } catch (error) {
     console.error('Erro no processamento alternativo:', error);
