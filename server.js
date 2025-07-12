@@ -227,10 +227,27 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
       console.error('Erro ao buscar mapeamentos:', mappingsError);
     }
     
+    // ✅ Função para mapear priority para valores válidos do enum
+    const mapPriorityToEnum = (priority) => {
+      const validValues = ['low', 'medium', 'high'];
+      const lowerPriority = (priority || 'medium').toLowerCase().trim();
+      
+      // Mapeamento de valores comuns
+      if (lowerPriority === 'baixa' || lowerPriority === 'baixo') return 'low';
+      if (lowerPriority === 'media' || lowerPriority === 'medio' || lowerPriority === 'médio' || lowerPriority === 'média') return 'medium';
+      if (lowerPriority === 'alta' || lowerPriority === 'alto') return 'high';
+      
+      // Se já está em um formato válido, usar
+      if (validValues.includes(lowerPriority)) return lowerPriority;
+      
+      // Padrão
+      return 'medium';
+    };
+
     // Processar campos do lead
     let leadData = {
       status: webhook.default_lead_status || 'new',
-      priority: webhook.default_lead_priority || 'medium',
+      priority: mapPriorityToEnum(webhook.default_lead_priority), // ✅ Mapear para enum válido
       source: webhook.default_lead_source || 'webhook'
     };
     
@@ -248,7 +265,12 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
         }
         
         if (fieldValue) {
-          leadData[mapping.target_field] = fieldValue;
+          // ✅ Mapear priority para valor válido do enum se necessário
+          if (mapping.target_field === 'priority') {
+            leadData[mapping.target_field] = mapPriorityToEnum(fieldValue);
+          } else {
+            leadData[mapping.target_field] = fieldValue;
+          }
         }
       }
     } else {
