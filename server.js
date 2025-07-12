@@ -328,6 +328,7 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
             full_name: leadData.name || leadData.nome || 'Contato via Webhook',
             email: leadData.email,
             phone: leadData.phone,
+            source: 'webhook',
             created_by: user.id
           })
           .select()
