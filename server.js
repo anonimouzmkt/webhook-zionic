@@ -86,6 +86,7 @@ async function getWebhookByToken(token) {
 // Função auxiliar para processar webhook
 async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
   try {
+    console.log('🔄 Tentando processamento principal...');
     const { data, error } = await supabase
       .rpc('process_webhook_payload', {
         p_webhook_endpoint_id: webhookId,
@@ -95,21 +96,15 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
       });
       
     if (error) {
-      console.error('Erro ao processar webhook:', error);
-      
-      // Se o erro for sobre coluna inexistente, criar uma versão simplificada
-      if (error.message?.includes('column "is_system" does not exist')) {
-        console.log('🔄 Tentando processamento alternativo...');
-        return await processWebhookPayloadFallback(webhookId, payload, headers, sourceIP);
-      }
-      
-      throw error;
+      console.log('❌ Erro na função principal, usando processamento alternativo:', error.message);
+      return await processWebhookPayloadFallback(webhookId, payload, headers, sourceIP);
     }
     
+    console.log('✅ Processamento principal bem-sucedido');
     return data;
   } catch (err) {
-    console.error('Erro crítico ao processar webhook:', err);
-    throw err;
+    console.log('❌ Exceção na função principal, usando processamento alternativo:', err.message);
+    return await processWebhookPayloadFallback(webhookId, payload, headers, sourceIP);
   }
 }
 
@@ -256,17 +251,13 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
           leadData[mapping.target_field] = fieldValue;
         }
       }
-    } else {
-      // Mapeamento automático básico se não há mapeamentos configurados
-      leadData = {
-        ...leadData,
-        name: payload.name || payload.nome || payload.customer?.name || 'Lead do Webhook',
-        email: payload.email || payload.customer?.email || null,
-        phone: payload.phone || payload.telefone || payload.customer?.phone || null,
-        company: payload.company || payload.empresa || payload.customer?.company || null,
-        notes: `Lead criado automaticamente via webhook em ${new Date().toISOString()}`
-      };
-    }
+         } else {
+       // Se não há mapeamentos configurados, não criar lead automaticamente
+       return {
+         success: false,
+         error: 'Nenhum mapeamento de campo configurado. Configure os mapeamentos primeiro.'
+       };
+     }
     
     // Criar lead usando função unificada
     const { data: leadResult, error: leadError } = await supabase
