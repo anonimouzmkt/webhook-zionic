@@ -281,13 +281,42 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
       };
     }
     
-    // Criar lead usando função unificada
+    // ✅ Criar contato se necessário
+    let contactId = null;
+    if (leadData.phone || leadData.email || leadData.name || leadData.nome) {
+      const { data: contactResult, error: contactError } = await supabase
+        .from('contacts')
+        .insert({
+          company_id: webhook.company_id,
+          first_name: leadData.name || leadData.nome || 'Contato',
+          full_name: leadData.name || leadData.nome || 'Contato via Webhook',
+          email: leadData.email,
+          phone: leadData.phone,
+          created_by: user.id
+        })
+        .select()
+        .single();
+      
+      if (!contactError) {
+        contactId = contactResult.id;
+      }
+    }
+    
+    // ✅ Criar lead diretamente na tabela (sem usar create_lead_unified)
     const { data: leadResult, error: leadError } = await supabase
-      .rpc('create_lead_unified', {
-        p_lead_data: leadData,
-        p_user_id: user.id,
-        p_company_id: webhook.company_id
-      });
+      .from('leads')
+      .insert({
+        company_id: webhook.company_id,
+        contact_id: contactId,
+        title: leadData.title || leadData.name || leadData.nome || 'Lead via Webhook',
+        description: leadData.description || 'Lead criado via webhook',
+        status: leadData.status || 'new',
+        priority: leadData.priority || 'medium', // ✅ Já vem mapeado pela função mapPriorityToEnum
+        source: leadData.source || 'webhook',
+        created_by: user.id
+      })
+      .select()
+      .single();
     
     if (leadError) {
       console.error('Erro ao criar lead:', leadError);
@@ -315,10 +344,10 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
       const firstColumn = webhook.pipelines.pipeline_columns
         .sort((a, b) => a.position - b.position)[0];
       
-      if (firstColumn && leadResult?.lead_id) {
+      if (firstColumn && leadResult?.id) {
         await supabase
           .rpc('move_lead_to_column', {
-            p_lead_id: leadResult.lead_id,
+            p_lead_id: leadResult.id,
             p_column_id: firstColumn.id
           });
       }
@@ -330,8 +359,9 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
         .from('webhook_requests')
         .update({
           status: 'success',
-          processing_result: leadResult,
-          created_lead_id: leadResult?.lead_id,
+          processing_result: { success: true, lead_id: leadResult?.id, contact_id: contactId },
+          created_lead_id: leadResult?.id,
+          created_contact_id: contactId,
           processed_at: new Date().toISOString()
         })
         .eq('id', requestData.id);
@@ -346,8 +376,8 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
     
     return {
       success: true,
-      lead_id: leadResult?.lead_id,
-      contact_id: leadResult?.contact_id,
+      lead_id: leadResult?.id,
+      contact_id: contactId,
       pipeline_id: webhook.pipeline_id,
       column_id: webhook.pipelines?.pipeline_columns?.[0]?.id
     };
