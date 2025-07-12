@@ -148,7 +148,7 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
         webhook_endpoint_id: webhookId,
         method: 'POST',
         payload: payload,
-        headers: typeof headers === 'string' ? headers : JSON.stringify(headers),
+        headers: typeof headers === 'string' ? JSON.parse(headers) : headers,
         source_ip: sourceIP ? sourceIP.split(',')[0].trim() : null,
         status: 'processing'
       })
