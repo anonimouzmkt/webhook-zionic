@@ -83,10 +83,10 @@ async function getWebhookByToken(token) {
   return data;
 }
 
-// Função auxiliar para processar webhook
+// ✅ Função ÚNICA para processar webhook - reescrita para funcionar 100%
 async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
   try {
-    console.log('🔄 Tentando processamento principal...');
+    console.log('🔄 Processando webhook via função SQL...');
     const { data, error } = await supabase
       .rpc('process_webhook_payload', {
         p_webhook_endpoint_id: webhookId,
@@ -96,332 +96,27 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
       });
       
     if (error) {
-      console.log('❌ Erro na função principal, detalhes:', error.message);
-      console.log('🔄 Usando processamento alternativo...');
-      return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
+      console.error('❌ Erro na função SQL:', error);
+      return {
+        success: false,
+        error: error.message,
+        error_code: error.code
+      };
     }
     
-    console.log('✅ Processamento principal bem-sucedido');
+    console.log('✅ Webhook processado com sucesso');
     return data;
   } catch (err) {
-    console.log('❌ Exceção na função principal:', err.message);
-    console.log('🔄 Usando processamento alternativo...');
-    return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
-  }
-}
-
-// Função alternativa para processar webhook quando há problemas com a função principal
-async function processWebhookPayloadFallback(webhookId, payload, headers, sourceIP) {
-  console.log('🔄 Usando processamento alternativo para webhook:', webhookId);
-  
-  try {
-    // Buscar configurações do webhook
-    const { data: webhook, error: webhookError } = await supabase
-      .from('webhook_endpoints')
-      .select(`
-        *,
-        pipelines (
-          id,
-          name,
-          pipeline_columns (
-            id,
-            position
-          )
-        )
-      `)
-      .eq('id', webhookId)
-      .single();
-      
-    if (webhookError) {
-      throw webhookError;
-    }
-    
-    if (!webhook) {
-      return {
-        success: false,
-        error: 'Webhook endpoint não encontrado'
-      };
-    }
-    
-    // Registrar requisição
-    const { data: requestData, error: requestError } = await supabase
-      .from('webhook_requests')
-      .insert({
-        webhook_endpoint_id: webhookId,
-        method: 'POST',
-        payload: payload,
-        headers: typeof headers === 'string' ? JSON.parse(headers) : headers,
-        source_ip: sourceIP ? sourceIP.split(',')[0].trim() : null,
-        status: 'processing'
-      })
-      .select()
-      .single();
-    
-    if (requestError) {
-      console.error('Erro ao registrar requisição:', requestError);
-    }
-    
-    // Se está em modo mapping, apenas salvar dados de exemplo
-    if (webhook.mapping_mode === 'mapping') {
-      const { error: sampleError } = await supabase
-        .from('webhook_sample_data')
-        .upsert({
-          webhook_endpoint_id: webhookId,
-          sample_payload: payload,
-          detected_fields: Object.keys(payload)
-        });
-      
-      if (sampleError) {
-        console.error('Erro ao salvar dados de exemplo:', sampleError);
-      }
-      
-      // Atualizar status da requisição
-      if (requestData) {
-        await supabase
-          .from('webhook_requests')
-          .update({
-            status: 'completed',
-            processed_at: new Date().toISOString()
-          })
-          .eq('id', requestData.id);
-      }
-      
-      return {
-        success: true,
-        mode: 'mapping',
-        message: 'Dados de exemplo salvos para mapeamento'
-      };
-    }
-    
-    // Se não está ativo, ignorar
-    if (webhook.mapping_mode !== 'active') {
-      return {
-        success: false,
-        error: 'Webhook não está em modo ativo'
-      };
-    }
-    
-    // Buscar usuário para criação do lead (primeiro admin da empresa)
-    const { data: user, error: userError } = await supabase
-      .from('users')
-      .select('id')
-      .eq('company_id', webhook.company_id)
-      .eq('is_admin', true)
-      .limit(1)
-      .single();
-    
-    if (userError || !user) {
-      console.error('Erro ao buscar usuário:', userError);
-      return {
-        success: false,
-        error: 'Usuário não encontrado para criação do lead'
-      };
-    }
-    
-    // Buscar mapeamentos de campos
-    const { data: mappings, error: mappingsError } = await supabase
-      .from('webhook_field_mappings')
-      .select('source_field, target_field, is_required, default_value')
-      .eq('webhook_endpoint_id', webhookId)
-      .eq('is_active', true);
-    
-    if (mappingsError) {
-      console.error('Erro ao buscar mapeamentos:', mappingsError);
-    }
-    
-    // ✅ Função para mapear priority para valores válidos do enum
-    const mapPriorityToEnum = (priority) => {
-      const validValues = ['low', 'medium', 'high'];
-      const lowerPriority = (priority || 'medium').toLowerCase().trim();
-      
-      // Mapeamento de valores comuns
-      if (lowerPriority === 'baixa' || lowerPriority === 'baixo') return 'low';
-      if (lowerPriority === 'media' || lowerPriority === 'medio' || lowerPriority === 'médio' || lowerPriority === 'média') return 'medium';
-      if (lowerPriority === 'alta' || lowerPriority === 'alto') return 'high';
-      
-      // Se já está em um formato válido, usar
-      if (validValues.includes(lowerPriority)) return lowerPriority;
-      
-      // Padrão
-      return 'medium';
-    };
-
-    // Processar campos do lead
-    let leadData = {
-      status: webhook.default_lead_status || 'new',
-      priority: mapPriorityToEnum(webhook.default_lead_priority), // ✅ Mapear para enum válido
-      source: webhook.default_lead_source || 'webhook'
-    };
-    
-    // Aplicar mapeamentos
-    if (mappings && mappings.length > 0) {
-      for (const mapping of mappings) {
-        const sourceValue = getNestedValue(payload, mapping.source_field);
-        const fieldValue = sourceValue || mapping.default_value;
-        
-        if (mapping.is_required && !fieldValue) {
-          return {
-            success: false,
-            error: `Campo obrigatório ausente: ${mapping.source_field}`
-          };
-        }
-        
-        if (fieldValue) {
-          // ✅ Mapear priority para valor válido do enum se necessário
-          if (mapping.target_field === 'priority') {
-            leadData[mapping.target_field] = mapPriorityToEnum(fieldValue);
-          } else {
-            leadData[mapping.target_field] = fieldValue;
-          }
-        }
-      }
-    } else {
-      // Se não há mapeamentos configurados, não criar lead automaticamente
-      return {
-        success: false,
-        error: 'Nenhum mapeamento de campo configurado. Configure os mapeamentos primeiro.'
-      };
-    }
-    
-    // ✅ Verificar se já existe contato com o mesmo número/email
-    let contactId = null;
-    if (leadData.phone || leadData.email || leadData.name || leadData.nome) {
-      // Primeiro, tentar encontrar contato existente pelo telefone ou email
-      let existingContact = null;
-      
-      if (leadData.phone) {
-        const { data: phoneContact } = await supabase
-          .from('contacts')
-          .select('id')
-          .eq('company_id', webhook.company_id)
-          .eq('phone', leadData.phone)
-          .single();
-        
-        if (phoneContact) {
-          existingContact = phoneContact;
-        }
-      }
-      
-      // Se não encontrou pelo telefone, tentar pelo email
-      if (!existingContact && leadData.email) {
-        const { data: emailContact } = await supabase
-          .from('contacts')
-          .select('id')
-          .eq('company_id', webhook.company_id)
-          .eq('email', leadData.email)
-          .single();
-        
-        if (emailContact) {
-          existingContact = emailContact;
-        }
-      }
-      
-      if (existingContact) {
-        // Usar contato existente
-        contactId = existingContact.id;
-        console.log(`📞 Usando contato existente: ${contactId}`);
-      } else {
-        // Criar novo contato
-        const { data: contactResult, error: contactError } = await supabase
-          .from('contacts')
-          .insert({
-            company_id: webhook.company_id,
-            first_name: leadData.name || leadData.nome || 'Contato',
-            full_name: leadData.name || leadData.nome || 'Contato via Webhook',
-            email: leadData.email,
-            phone: leadData.phone,
-            source: 'webhook',
-            created_by: user.id
-          })
-          .select()
-          .single();
-        
-        if (!contactError) {
-          contactId = contactResult.id;
-          console.log(`👤 Novo contato criado: ${contactId}`);
-        }
-      }
-    }
-    
-         // ✅ Criar lead usando a função SQL ao invés de INSERT direto
-     const { data: leadResult, error: leadError } = await supabase
-       .rpc('create_lead_unified', {
-         lead_data: {
-           company_id: webhook.company_id,
-           contact_id: contactId,
-           title: leadData.title || leadData.name || leadData.nome || 'Lead via Webhook',
-           description: leadData.notes || 'Lead criado via webhook',
-           email: leadData.email,
-           phone: leadData.phone,
-           status: leadData.status,
-           priority: leadData.priority, // ✅ Já mapeado para enum válido
-           source: leadData.source,
-           contact_name: leadData.name || leadData.nome,
-           contact_email: leadData.email,
-           contact_phone: leadData.phone,
-           contact_company: leadData.company
-         },
-         user_id: user.id,
-         target_company_id: webhook.company_id
-       });
-     
-     if (leadError) {
-       console.error('Erro ao criar lead:', leadError);
-       throw leadError;
-     }
-     
-     // ✅ Verificar se a função retornou sucesso
-     if (!leadResult || !leadResult.success) {
-       console.error('Erro na criação do lead:', leadResult?.error || 'Erro desconhecido');
-       throw new Error(leadResult?.error || 'Erro na criação do lead');
-     }
-     
-     console.log('✅ Lead criado com sucesso:', leadResult.lead_id);
-     
-     // ✅ Mover lead para a coluna específica do webhook se configurada
-     if (webhook.default_column_id && leadResult.lead_id) {
-       const { error: moveError } = await supabase
-         .rpc('move_lead_to_column', {
-           lead_id: leadResult.lead_id,
-           column_id: webhook.default_column_id
-         });
-       
-       if (moveError) {
-         console.error('Erro ao mover lead para coluna específica:', moveError);
-       } else {
-         console.log(`📍 Lead movido para coluna configurada: ${webhook.default_column_id}`);
-       }
-     }
-     
-     // Atualizar status da requisição para sucesso
-     if (requestData) {
-       await supabase
-         .from('webhook_requests')
-         .update({
-           status: 'success',
-           processed_at: new Date().toISOString(),
-           lead_id: leadResult.lead_id
-         })
-         .eq('id', requestData.id);
-     }
-     
-     return {
-       success: true,
-       lead_id: leadResult.lead_id,
-       contact_id: leadResult.contact_id,
-       pipeline_id: leadResult.pipeline_id,
-       column_id: webhook.default_column_id || leadResult.column_id,
-       message: 'Lead criado com sucesso via webhook'
-     };
-    
-  } catch (error) {
-    console.error('Erro no processamento alternativo:', error);
+    console.error('❌ Exceção no processamento:', err);
     return {
       success: false,
-      error: error.message || 'Erro interno no processamento'
+      error: err.message,
+      error_code: 'PROCESSING_ERROR'
     };
   }
 }
+
+// ✅ FUNÇÃO REMOVIDA - Agora usa apenas a função SQL process_webhook_payload reescrita
 
 // Função auxiliar para acessar valores aninhados
 function getNestedValue(obj, path) {
@@ -504,7 +199,7 @@ app.post('/webhook/:token', [
       });
     }
 
-    // Processar webhook
+    // ✅ Processar webhook usando APENAS a função SQL reescrita
     const result = await processWebhookPayload(
       webhook.webhook_id,
       payload,
