@@ -96,14 +96,16 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
       });
       
     if (error) {
-      console.log('❌ Erro na função principal, usando processamento alternativo:', error.message);
+      console.log('❌ Erro na função principal, detalhes:', error.message);
+      console.log('🔄 Usando processamento alternativo...');
       return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
     }
     
     console.log('✅ Processamento principal bem-sucedido');
     return data;
   } catch (err) {
-    console.log('❌ Exceção na função principal, usando processamento alternativo:', err.message);
+    console.log('❌ Exceção na função principal:', err.message);
+    console.log('🔄 Usando processamento alternativo...');
     return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
   }
 }
@@ -341,37 +343,55 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
       }
     }
     
-         // ✅ Criar lead com pipeline e coluna especificados
+         // ✅ Criar lead usando a função SQL ao invés de INSERT direto
      const { data: leadResult, error: leadError } = await supabase
-       .from('leads')
-       .insert({
-         company_id: webhook.company_id,
-         created_by: user.id,
-         pipeline_id: webhook.pipeline_id,
-         column_id: webhook.default_column_id, // ✅ Usar a coluna configurada
-         contact_id: contactId,
-         name: leadData.name || leadData.nome || 'Lead via Webhook',
-         email: leadData.email,
-         phone: leadData.phone,
-         company: leadData.company,
-         title: leadData.title,
-         notes: leadData.notes,
-         website: leadData.website,
-         linkedin: leadData.linkedin,
-         status: leadData.status,
-         priority: leadData.priority,
-         source: leadData.source,
-         metadata: payload // Salvar payload original como metadata
-       })
-       .select()
-       .single();
+       .rpc('create_lead_unified', {
+         lead_data: {
+           company_id: webhook.company_id,
+           contact_id: contactId,
+           title: leadData.title || leadData.name || leadData.nome || 'Lead via Webhook',
+           description: leadData.notes || 'Lead criado via webhook',
+           email: leadData.email,
+           phone: leadData.phone,
+           status: leadData.status,
+           priority: leadData.priority, // ✅ Já mapeado para enum válido
+           source: leadData.source,
+           contact_name: leadData.name || leadData.nome,
+           contact_email: leadData.email,
+           contact_phone: leadData.phone,
+           contact_company: leadData.company
+         },
+         user_id: user.id,
+         target_company_id: webhook.company_id
+       });
      
      if (leadError) {
        console.error('Erro ao criar lead:', leadError);
        throw leadError;
      }
      
-     console.log('✅ Lead criado com sucesso:', leadResult.id);
+     // ✅ Verificar se a função retornou sucesso
+     if (!leadResult || !leadResult.success) {
+       console.error('Erro na criação do lead:', leadResult?.error || 'Erro desconhecido');
+       throw new Error(leadResult?.error || 'Erro na criação do lead');
+     }
+     
+     console.log('✅ Lead criado com sucesso:', leadResult.lead_id);
+     
+     // ✅ Mover lead para a coluna específica do webhook se configurada
+     if (webhook.default_column_id && leadResult.lead_id) {
+       const { error: moveError } = await supabase
+         .rpc('move_lead_to_column', {
+           lead_id: leadResult.lead_id,
+           column_id: webhook.default_column_id
+         });
+       
+       if (moveError) {
+         console.error('Erro ao mover lead para coluna específica:', moveError);
+       } else {
+         console.log(`📍 Lead movido para coluna configurada: ${webhook.default_column_id}`);
+       }
+     }
      
      // Atualizar status da requisição para sucesso
      if (requestData) {
@@ -380,17 +400,17 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
          .update({
            status: 'success',
            processed_at: new Date().toISOString(),
-           lead_id: leadResult.id
+           lead_id: leadResult.lead_id
          })
          .eq('id', requestData.id);
      }
      
      return {
        success: true,
-       lead_id: leadResult.id,
-       contact_id: contactId,
-       pipeline_id: webhook.pipeline_id,
-       column_id: webhook.default_column_id,
+       lead_id: leadResult.lead_id,
+       contact_id: leadResult.contact_id,
+       pipeline_id: leadResult.pipeline_id,
+       column_id: webhook.default_column_id || leadResult.column_id,
        message: 'Lead criado com sucesso via webhook'
      };
     
