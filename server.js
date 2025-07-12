@@ -97,14 +97,14 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
       
     if (error) {
       console.log('❌ Erro na função principal, usando processamento alternativo:', error.message);
-      return await processWebhookPayloadFallback(webhookId, payload, headers, sourceIP);
+      return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
     }
     
     console.log('✅ Processamento principal bem-sucedido');
     return data;
   } catch (err) {
     console.log('❌ Exceção na função principal, usando processamento alternativo:', err.message);
-    return await processWebhookPayloadFallback(webhookId, payload, headers, sourceIP);
+    return await processWebhookPayloadFallback(webhookId, payload, JSON.stringify(headers), sourceIP);
   }
 }
 
@@ -148,8 +148,8 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
         webhook_endpoint_id: webhookId,
         method: 'POST',
         payload: payload,
-        headers: headers,
-        source_ip: sourceIP,
+        headers: typeof headers === 'string' ? headers : JSON.stringify(headers),
+        source_ip: sourceIP ? sourceIP.split(',')[0].trim() : null,
         status: 'processing'
       })
       .select()
@@ -424,7 +424,7 @@ app.post('/webhook/:token', [
     const result = await processWebhookPayload(
       webhook.webhook_id,
       payload,
-      headers,
+      JSON.stringify(headers), // Converter headers para string JSON
       sourceIP
     );
 
