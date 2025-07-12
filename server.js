@@ -251,13 +251,13 @@ async function processWebhookPayloadFallback(webhookId, payload, headers, source
           leadData[mapping.target_field] = fieldValue;
         }
       }
-         } else {
-       // Se não há mapeamentos configurados, não criar lead automaticamente
-       return {
-         success: false,
-         error: 'Nenhum mapeamento de campo configurado. Configure os mapeamentos primeiro.'
-       };
-     }
+    } else {
+      // Se não há mapeamentos configurados, não criar lead automaticamente
+      return {
+        success: false,
+        error: 'Nenhum mapeamento de campo configurado. Configure os mapeamentos primeiro.'
+      };
+    }
     
     // Criar lead usando função unificada
     const { data: leadResult, error: leadError } = await supabase
