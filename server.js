@@ -211,6 +211,8 @@ app.post('/webhook/:token', [
       data: result.success ? {
         lead_id: result.lead_id,
         contact_id: result.contact_id,
+        pipeline_id: result.pipeline_id,
+        column_id: result.column_id,
         webhook_name: webhook.name
       } : null,
       error_code: result.success ? null : result.error_code
