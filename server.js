@@ -86,14 +86,33 @@ async function getWebhookByToken(token) {
 // ✅ Função ÚNICA para processar webhook - reescrita para funcionar 100%
 async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
   try {
-    console.log('🔄 Processando webhook via função SQL...');
+    console.log('🔄 Processando webhook...');
+    
+    // Extrair e processar campos detectados para log
+    const detectedFields = Object.keys(payload).filter(key => {
+      const value = payload[key];
+      return value !== null && value !== undefined && value !== '';
+    });
+    
+    console.log('📋 Campos detectados:', detectedFields);
+    
+    // Preparar dados para a função SQL (4 parâmetros que ela aceita)
+    const processedData = {
+      p_webhook_endpoint_id: webhookId,
+      p_payload: payload,
+      p_headers: headers,
+      p_source_ip: sourceIP
+    };
+    
+    console.log('📤 Enviando dados para função SQL:', {
+      webhook_id: webhookId,
+      detected_fields_count: detectedFields.length,
+      detected_fields: detectedFields,
+      payload_keys: Object.keys(payload)
+    });
+    
     const { data, error } = await supabase
-      .rpc('process_webhook_payload', {
-        p_webhook_endpoint_id: webhookId,
-        p_payload: payload,
-        p_headers: headers,
-        p_source_ip: sourceIP
-      });
+      .rpc('process_webhook_payload', processedData);
       
     if (error) {
       console.error('❌ Erro na função SQL:', error);
