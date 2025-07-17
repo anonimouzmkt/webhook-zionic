@@ -80,7 +80,62 @@ async function getWebhookByToken(token) {
     return null;
   }
   
+  // A função SQL agora retorna jsonb ou null
   return data;
+}
+
+// ✅ NOVA FUNÇÃO: Normalizar números de telefone para consistência
+function normalizePhoneNumber(phone) {
+  if (!phone || typeof phone !== 'string') {
+    return phone;
+  }
+  
+  // Remover todos os caracteres não numéricos (incluindo +, espaços, parênteses, hífens)
+  let normalized = phone.replace(/[^\d]/g, '');
+  
+  // Log para debug
+  console.log('📱 Normalizando telefone:', {
+    original: phone,
+    normalized: normalized,
+    removedChars: phone.replace(/\d/g, '')
+  });
+  
+  return normalized;
+}
+
+// ✅ NOVA FUNÇÃO: Normalizar payload recursivamente, aplicando normalização de telefone
+function normalizePayloadPhoneNumbers(payload) {
+  if (!payload || typeof payload !== 'object') {
+    return payload;
+  }
+  
+  const normalized = JSON.parse(JSON.stringify(payload)); // Deep clone
+  
+  // Função recursiva para normalizar
+  function normalizeRecursively(obj, path = '') {
+    if (!obj || typeof obj !== 'object') return;
+    
+    for (const [key, value] of Object.entries(obj)) {
+      const currentPath = path ? `${path}.${key}` : key;
+      
+      if (typeof value === 'object' && value !== null) {
+        // Recursão para objetos aninhados
+        normalizeRecursively(value, currentPath);
+      } else if (typeof value === 'string') {
+        // Verificar se é um campo de telefone
+        const isPhoneField = /phone|telefone|mobile|celular|whatsapp/i.test(key);
+        
+        if (isPhoneField) {
+          const normalizedPhone = normalizePhoneNumber(value);
+          obj[key] = normalizedPhone;
+          console.log(`📱 Campo telefone normalizado: ${currentPath} = ${value} → ${normalizedPhone}`);
+        }
+      }
+    }
+  }
+  
+  normalizeRecursively(normalized);
+  return normalized;
 }
 
 // ✅ Função ÚNICA para processar webhook - reescrita para funcionar 100%
@@ -88,9 +143,13 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
   try {
     console.log('🔄 Processando webhook...');
     
+    // ✅ NOVO: Normalizar números de telefone no payload ANTES de processar
+    console.log('📱 Normalizando números de telefone no payload...');
+    const normalizedPayload = normalizePayloadPhoneNumbers(payload);
+    
     // Extrair e processar campos detectados para log
-    const detectedFields = Object.keys(payload).filter(key => {
-      const value = payload[key];
+    const detectedFields = Object.keys(normalizedPayload).filter(key => {
+      const value = normalizedPayload[key];
       return value !== null && value !== undefined && value !== '';
     });
     
@@ -99,7 +158,7 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
     // Preparar dados para a função SQL (4 parâmetros que ela aceita)
     const processedData = {
       p_webhook_endpoint_id: webhookId,
-      p_payload: payload,
+      p_payload: normalizedPayload, // ✅ Usar payload normalizado
       p_headers: headers,
       p_source_ip: sourceIP
     };
@@ -108,7 +167,8 @@ async function processWebhookPayload(webhookId, payload, headers, sourceIP) {
       webhook_id: webhookId,
       detected_fields_count: detectedFields.length,
       detected_fields: detectedFields,
-      payload_keys: Object.keys(payload)
+      payload_keys: Object.keys(normalizedPayload),
+      phone_normalization_applied: true
     });
     
     const { data, error } = await supabase
@@ -305,7 +365,8 @@ app.get('/webhook/:token/test', async (req, res) => {
           title: "Negócio de Teste",
           value: 5000,
           source: "Website"
-        }
+        },
+        note: "Este payload será normalizado automaticamente - o telefone +5511999999999 será convertido para 5511999999999 para consistência com o WhatsApp"
       }
     });
   } catch (error) {
